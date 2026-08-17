@@ -1,0 +1,6 @@
+#!/bin/bash
+# Abaqus 2024 启动包装器
+# 补充缺失系统库；LIBGL_ALWAYS_INDIRECT 解决 X11 转发下的 GLX visuals 问题
+export LD_LIBRARY_PATH=$HOME/HDD_POOL/abaqus2024_libs:$LD_LIBRARY_PATH
+export LIBGL_ALWAYS_INDIRECT=1
+exec $HOME/HDD_POOL/SIMULIA/EstProducts/2024/abaqus "$@"
