@@ -20,8 +20,9 @@
 9. [Standard 求解器缺失的补装（重点）](#9-standard-求解器补装重点)
 10. [验证：单元素测试作业](#10-验证单元素测试作业)
 11. [GUI（CAE）使用方法](#11-gui-cae-使用方法)
-12. [常见问题 FAQ](#12-常见问题-faq)
-13. [文件布局速查](#13-文件布局速查)
+12. [Fortran 用户子程序（UMAT）配置（重点）](#12-fortran-用户子程序umat配置重点)
+13. [常见问题 FAQ](#13-常见问题-faq)
+14. [文件布局速查](#14-文件布局速查)
 
 ---
 
@@ -542,7 +543,104 @@ abaqus2024 cae -mesa
 
 ---
 
-## 12. 常见问题 FAQ
+## 12. Fortran 用户子程序（UMAT）配置（重点）
+
+> 参考集群 Abaqus 2017 的配置方式：site env 使用 `ifort` 编译用户子程序。
+> Abaqus 2024 安装时**缺少用户子程序组件**（SMAUsubs/PublicInterfaces 接口文件、
+> `libstandardU_static.a` 静态库），需要补装，并让 `abaqus make` 能找到 Intel ifort。
+
+### 12.1 症状
+
+```
+Abaqus Error: Include file "aba_param.inc" required for compilation is not found.
+Abaqus Error: The Abaqus user subroutine library could not be found.
+```
+
+### 12.2 三个缺失组件与补装
+
+| 缺失项 | 正确位置 | 来源 |
+|---|---|---|
+| `SMAUsubs/PublicInterfaces/`（26 个接口文件） | `$ABQ/SMAUsubs/PublicInterfaces/`（**与 `linux_a64` 平级**） | 从 Abaqus 2020 复制 |
+| site 参数 inc（`aba_param_dp/sp.inc`、`vaba_param*.inc` 等 9 个） | `$ABQ/linux_a64/SMA/site/` | 从 Abaqus 2017 site 复制 |
+| `libstandardU_static.a`（静态库，含标准子程序符号） | `$ABQ/linux_a64/code/lib/` | 从 Abaqus 2020 复制 |
+
+> ⚠️ make.pyc 的 include 路径是 `$ABA_HOME/../SMAUsubs/PublicInterfaces`，
+> 即 `$ABQ/SMAUsubs/PublicInterfaces`（安装根，**不是** `linux_a64` 下面）。
+
+### 12.3 编译器：Intel oneAPI 2024.2（ifort 2021.13）
+
+集群有 Intel oneAPI 2024.2（`/APP/u22/x86/intel/oneapi2024.2`），含 ifort 2021.13.0。
+
+### 12.4 启动包装器（make 时加载 ifort，正常运行不注入）
+
+`~/bin/abaqus2024`（完整版，见 `scripts/fortran/abaqus2024_fortran`）：
+
+```bash
+#!/bin/bash
+# ============================================================
+#  Abaqus 2024 启动包装器（含 Fortran 用户子程序支持）
+#  - 补充缺失系统库
+#  - LIBGL_ALWAYS_INDIRECT 解决 X11 GLX visuals 问题
+#  - make 子命令时加载 Intel oneAPI（ifort）+ Abaqus code/bin
+#  - 正常运行不注入 LD_LIBRARY_PATH（避免干扰 Abaqus MPI 加载）
+# ============================================================
+export LIBGL_ALWAYS_INDIRECT=1
+
+ABQ=$HOME/HDD_POOL/SIMULIA/EstProducts/2024
+export ABA_HOME=$ABQ/linux_a64
+
+# 判断子命令：make 需要编译器环境；其余交给 Abaqus launcher 自己处理
+FIRST_ARG="${1:-}"
+
+if [ "$FIRST_ARG" = "make" ] || [ "$FIRST_ARG" = "python" ]; then
+    export LD_LIBRARY_PATH=$HOME/HDD_POOL/abaqus2024_libs:$LD_LIBRARY_PATH
+    INTEL_SETVARS=/APP/u22/x86/intel/oneapi2024.2/setvars.sh
+    if [ -f "$INTEL_SETVARS" ]; then
+        source "$INTEL_SETVARS" >/dev/null 2>&1
+    fi
+    export LD_LIBRARY_PATH=$ABQ/linux_a64/code/bin:$LD_LIBRARY_PATH
+    INTEL_LIBS=/APP/u22/x86/intel/oneapi2024.2/compiler/2024.2/lib
+    [ -d "$INTEL_LIBS" ] && export LD_LIBRARY_PATH="$INTEL_LIBS:$LD_LIBRARY_PATH"
+    export FOR_IGNORE_EXCEPTIONS=1
+    export FOR_DISABLE_STACK_TRACE=1
+fi
+
+exec $ABQ/abaqus "$@"
+```
+
+### 12.5 编译 UMAT 并提交作业
+
+```bash
+# 1) 编译用户子程序（产物为 libstandardU.so）
+cd ~/HDD_POOL/fortran_test
+~/bin/abaqus2024 make library=umat_test.f
+# 期望：Abaqus JOB umat_test.f COMPLETED
+
+# 2) 提交作业（必须走 SLURM！登录节点 interactive 会因缺少 PMPI 初始化报
+#    "libstandardU.so: failed to map segment"）
+sbatch umat_slurm_test.sh
+```
+
+> ⚠️ **必须通过 SLURM 运行 UMAT 作业**。在登录节点直接 `interactive` 运行时，
+> 求解器 dlopen `libstandardU.so` 时依赖的 `libmpiCC.so` 缺少 `hpmp_bor` 符号
+> （Platform MPI 的 dlopen 行为），报 `failed to map segment from shared object`。
+> SLURM 计算节点上 PMPI 完整初始化，无此问题。
+
+### 12.6 测试脚本（见 `scripts/fortran/`）
+
+- `umat_test.f` — 可用的线性弹性 UMAT（含应力更新，保证收敛）
+- `umat_e2e.inp` — 调用 UMAT 的单元素测试模型（`*User Material` + `*Depvar`）
+- `umat_slurm_test.sh` — SLURM 端到端测试（com_u22，8 核）
+
+### 12.7 验证输出
+
+```
+Abaqus JOB umat_test.f COMPLETED        ← 编译链接成功
+Abaqus JOB umat_e2e COMPLETED           ← 作业成功
+THE ANALYSIS HAS COMPLETED SUCCESSFULLY ← 收敛
+```
+
+## 13. 常见问题 FAQ
 
 | 症状 | 原因 | 解决 |
 |---|---|---|
@@ -558,7 +656,7 @@ abaqus2024 cae -mesa
 
 ---
 
-## 13. 文件布局速查
+## 14. 文件布局速查
 
 ```
 ~/HDD_POOL/
@@ -566,16 +664,20 @@ abaqus2024 cae -mesa
 ├── SIMULIA/
 │   ├── EstProducts/2024/      # 安装目录
 │   │   ├── abaqus             # 主 launcher
+│   │   ├── SMAUsubs/PublicInterfaces/   # 用户子程序接口文件（aba_param.inc 等）
 │   │   ├── linux_a64/code/bin/{standard, explicit, explicit_dp, *.so}
+│   │   ├── linux_a64/code/lib/libstandardU_static.a   # 标准子程序静态库
+│   │   ├── linux_a64/SMA/site/lnx86_64.env            # 编译器配置（ifort）
 │   │   └── InstallData/426/CODE/linux_a64/SIMULIA_EstPrd.media/media.db
 │   └── CAE/plugins/2024/      # 插件目录
 ├── abaqus2024_libs/           # 补齐的系统库
 ├── tmpinstall/                # 安装临时目录
 ├── license_forwarder.py       # （可选）许可证 TCP 转发器
 └── install_driver.py / install_driver.log
-~/bin/abaqus2024               # 启动包装器
+~/bin/abaqus2024               # 启动包装器（make 时加载 ifort）
 ~/abaqus_v6.env                # 环境文件
 ~/abaqus/abaqus2024-try/       # 作业目录（run_abaqus2024.sh + inp + 输出）
+~/HDD_POOL/fortran_test/       # UMAT 测试目录（umat_test.f, libstandardU.so）
 ```
 
 ---
@@ -592,3 +694,7 @@ abaqus2024 cae -mesa
 | `scripts/install_std_solver.sh` | Standard 求解器补装 |
 | `scripts/tiny_std.inp` | 验证用单元素模型 |
 | `scripts/tiny_std_test.sh` | 验证用 SLURM 脚本 |
+| `scripts/fortran/abaqus2024_fortran` | 含 Fortran 支持的启动包装器 |
+| `scripts/fortran/umat_test.f` | 线性弹性 UMAT 示例 |
+| `scripts/fortran/umat_e2e.inp` | 调用 UMAT 的测试模型 |
+| `scripts/fortran/umat_slurm_test.sh` | UMAT 端到端测试（SLURM） |

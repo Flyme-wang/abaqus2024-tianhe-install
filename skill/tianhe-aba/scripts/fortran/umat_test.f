@@ -1,0 +1,45 @@
+      SUBROUTINE UMAT(STRESS,STATEV,DDSDDE,SSE,SPD,SCD,
+     1 RPL,DDSDDT,DRPLDE,DRPLDT,
+     2 STRAN,DSTRAN,TIME,DTIME,TEMP,DTEMP,PREDEF,DPRED,CMNAME,
+     3 NDI,NSHR,NTENS,NSTATV,PROPS,NPROPS,COORDS,DROT,PNEWDT,
+     4 CELENT,DFGRD0,DFGRD1,NOEL,NPT,LAYER,KSPT,KSTEP,KINC)
+      INCLUDE 'ABA_PARAM.INC'
+      CHARACTER*80 CMNAME
+      DIMENSION STRESS(NTENS),STATEV(NSTATV),DDSDDE(NTENS,NTENS),
+     1 DSTRAN(NTENS),TIME(2),PREDEF(1),DPRED(1),PROPS(NPROPS),
+     2 COORDS(3),DROT(3,3),DFGRD0(3,3),DFGRD1(3,3)
+      DIMENSION STRAN(NTENS)
+C     linear elastic UMAT (correct: updates stress + DDSDDE)
+      REAL E, NU, LAMBDA, MU
+      E = PROPS(1)
+      NU = PROPS(2)
+      LAMBDA = E*NU/((1.0+NU)*(1.0-2.0*NU))
+      MU = E/(2.0*(1.0+NU))
+      DO I=1,NTENS
+        DO J=1,NTENS
+          DDSDDE(I,J) = 0.0
+        END DO
+      END DO
+      DO I=1,NDI
+        DO J=1,NDI
+          IF (I.EQ.J) THEN
+            DDSDDE(I,J) = LAMBDA + 2.0*MU
+          ELSE
+            DDSDDE(I,J) = LAMBDA
+          END IF
+        END DO
+      END DO
+      IF (NSHR.GT.0) THEN
+        DO I=NDI+1,NTENS
+          DDSDDE(I,I) = MU
+        END DO
+      END IF
+C     update stress
+      DO I=1,NTENS
+        STRESS(I) = 0.0
+        DO J=1,NTENS
+          STRESS(I) = STRESS(I) + DDSDDE(I,J)*DSTRAN(J)
+        END DO
+      END DO
+      RETURN
+      END

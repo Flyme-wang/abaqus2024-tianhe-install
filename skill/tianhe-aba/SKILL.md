@@ -109,6 +109,45 @@ echo "Abaqus exit: $?"
 echo "End: $(date)"
 ```
 
+## Fortran user subroutines (UMAT/VUMAT)
+
+The 2024 install **lacks the user-subroutine components**; they must be restored once. Reference: cluster Abaqus 2017 uses `ifort`.
+
+### Restore missing components (one-time)
+
+```bash
+ABQ=$HOME/HDD_POOL/SIMULIA/EstProducts/2024
+# 1) PublicInterfaces (26 files) — note: at install ROOT, sibling of linux_a64
+mkdir -p $ABQ/SMAUsubs/PublicInterfaces
+cp /APP/u22/x86_com/abaqus/Abaqus2020_HF6/SMAUsubs/PublicInterfaces/* $ABQ/SMAUsubs/PublicInterfaces/
+# 2) site parameter inc files (aba_param_dp/sp, vaba_param*, etc.)
+SRC=/APP/u22/x86_com/abaqus/Abaqus17/V6R2017x/linux_a64/SMA/site
+for f in aba_param_dp.inc aba_param_sp.inc vaba_param_dp.inc vaba_param_sp.inc \
+         aba_tcs_param.inc aba_evs_param.inc aba_globalvar_dp.inc aba_globalvar_sp.inc \
+         SMACfdUserSubroutines.h; do
+  [ -f "$SRC/$f" ] && [ ! -f "$ABQ/linux_a64/SMA/site/$f" ] && cp "$SRC/$f" "$ABQ/linux_a64/SMA/site/"
+done
+# 3) standard user subroutine static library
+mkdir -p $ABQ/linux_a64/code/lib
+cp /APP/u22/x86_com/abaqus/Abaqus2020_HF6/linux_a64/code/lib/libstandardU_static.a $ABQ/linux_a64/code/lib/
+```
+
+### Compile a user subroutine and run a job
+
+```bash
+# wrapper `scripts/fortran/abaqus2024_fortran` (deploy as ~/bin/abaqus2024) loads
+# Intel oneAPI 2024.2 (ifort) ONLY for `make`/`python`; normal runs stay clean.
+# 1) compile (produces libstandardU.so in cwd)
+~/bin/abaqus2024 make library=umat_test.f
+# 2) submit via SLURM — MUST go through sbatch, not login-node interactive
+sbatch scripts/fortran/umat_slurm_test.sh   # or add user=your.f to run_abaqus2024.sh
+```
+
+> ⚠️ **Always run user-subroutine jobs through SLURM.** On the login node,
+> interactive runs fail with `libstandardU.so: failed to map segment from shared
+> object` because `libmpiCC.so`'s `hpmp_bor` symbol is only provided after full
+> Platform MPI (PMPI) initialization, which happens inside SLURM jobs.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -118,6 +157,9 @@ echo "End: $(date)"
 | `lmgrd is not running` / no checkout | Partition cannot reach FLEXnet | Use `com_u22`; only that partition has license access |
 | `GLIBC_2.28 not found` | CentOS 7 (com_c76) | Use `com_u22` (Ubuntu 22.04) |
 | `Unknown keyword (hostsCompressed)` warnings | env parsed by Abaqus; harmless | Ignore |
+| `Include file aba_param.inc ... not found` | PublicInterfaces not installed | Restore from 2020 (see Fortran section) |
+| `Abaqus user subroutine library could not be found` | `libstandardU_static.a` missing | Copy from 2020 `linux_a64/code/lib/` |
+| `libstandardU.so: failed to map segment` | interactive run, no PMPI init | Run through SLURM only |
 | SSH banner exchange timeout | Routine cluster flakiness | Retry a few times |
 
 ## Quick validation
@@ -140,3 +182,7 @@ Expected: `THE ANALYSIS HAS COMPLETED SUCCESSFULLY` in `tiny_std.sta`.
 - `scripts/install_std_solver.sh` — reinstalls the missing `standard` solver executable from install media by media.db hash.
 - `scripts/abaqus2024` — the launcher wrapper deployed as `~/bin/abaqus2024`.
 - `scripts/abaqus_v6.env` — the environment file template (license + SLURM hostlist).
+- `scripts/fortran/abaqus2024_fortran` — wrapper that loads ifort for `make` (deploy as `~/bin/abaqus2024` to enable UMAT).
+- `scripts/fortran/umat_test.f` — working linear-elastic UMAT example.
+- `scripts/fortran/umat_e2e.inp` — single-element model using the UMAT (`*User Material` + `*Depvar`).
+- `scripts/fortran/umat_slurm_test.sh` — SLURM end-to-end UMAT test (com_u22).

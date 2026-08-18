@@ -1,0 +1,35 @@
+#!/bin/bash
+# ============================================================
+#  Abaqus 2024 启动包装器（含 Fortran 用户子程序支持）
+#  - 补充缺失系统库
+#  - LIBGL_ALWAYS_INDIRECT 解决 X11 GLX visuals 问题
+#  - make 子命令时加载 Intel oneAPI（ifort）+ Abaqus code/bin
+#  - 正常运行不注入 LD_LIBRARY_PATH（避免干扰 Abaqus MPI 加载）
+# ============================================================
+export LIBGL_ALWAYS_INDIRECT=1
+
+ABQ=$HOME/HDD_POOL/SIMULIA/EstProducts/2024
+export ABA_HOME=$ABQ/linux_a64
+
+# 判断子命令：make 需要编译器环境；其余交给 Abaqus launcher 自己处理
+FIRST_ARG="${1:-}"
+
+if [ "$FIRST_ARG" = "make" ] || [ "$FIRST_ARG" = "python" ]; then
+    # 缺失系统库（所有命令都需要）
+    export LD_LIBRARY_PATH=$HOME/HDD_POOL/abaqus2024_libs:$LD_LIBRARY_PATH
+    # Intel oneAPI 2024.2（ifort）
+    INTEL_SETVARS=/APP/u22/x86/intel/oneapi2024.2/setvars.sh
+    if [ -f "$INTEL_SETVARS" ]; then
+        source "$INTEL_SETVARS" >/dev/null 2>&1
+    fi
+    # Abaqus 自有库（make 的 python 进程需要）
+    export LD_LIBRARY_PATH=$ABQ/linux_a64/code/bin:$LD_LIBRARY_PATH
+    # Intel 运行时
+    INTEL_LIBS=/APP/u22/x86/intel/oneapi2024.2/compiler/2024.2/lib
+    [ -d "$INTEL_LIBS" ] && export LD_LIBRARY_PATH="$INTEL_LIBS:$LD_LIBRARY_PATH"
+    # Fortran RTE 兼容
+    export FOR_IGNORE_EXCEPTIONS=1
+    export FOR_DISABLE_STACK_TRACE=1
+fi
+
+exec $ABQ/abaqus "$@"
