@@ -174,6 +174,19 @@ ssh tianhe "cd ~/HDD_POOL/tiny_std_test && sbatch tiny_std_test.sh"
 
 Expected: `THE ANALYSIS HAS COMPLETED SUCCESSFULLY` in `tiny_std.sta`.
 
+## Abaqus MCP on the cluster — feasibility verdict
+
+**Verdict: the Abaqus MCP (`Flyme-wang/CAE-Agent-Hub/MCP/Abaqus`) does not run on this cluster.** It requires a persistent CAE GUI session plus local Python dependencies, both unavailable in the headless, restricted login environment.
+
+| MCP requirement | Cluster reality | Result |
+|---|---|---|
+| CAE GUI resident (bridge runs on GUI thread) | No Xvfb/Xvnc; no sudo to install | ❌ no headless start |
+| Plugin unconditionally calls `getAFXApp().getAFXMainWindow()` | `cae noGUI` has no AFXApp main window | ❌ noGUI unusable |
+| Depends on `mcp>=1.0` (pydantic/httpx/anyio) via pip | No pip on login node; external PyPI unreachable | ❌ deps cannot install |
+| Local wheel relay | Local proxy dead, no direct internet | ❌ relay infeasible |
+
+Use it on a local Windows machine with a local Abaqus install instead (`py -m venv .venv`, `pip install -e .` in `MCP/Abaqus/`, copy `abaqus_plugins/mcp_control` to `%USERPROFILE%\abaqus_plugins\`). On the cluster, use the SLURM workflow in this skill.
+
 ## Files in this skill
 
 - `scripts/run_abaqus2024.sh` — production SLURM submission script (32 cores, com_u22).

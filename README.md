@@ -21,7 +21,8 @@
 10. [验证：单元素测试作业](#10-验证单元素测试作业)
 11. [GUI（CAE）使用方法](#11-gui-cae-使用方法)
 12. [Fortran 用户子程序（UMAT）配置（重点）](#12-fortran-用户子程序umat配置重点)
-13. [常见问题 FAQ](#13-常见问题-faq)
+13. [Abaqus MCP 在超算上的可行性结论](#13-abaqus-mcp-在超算上的可行性结论)
+14. [常见问题 FAQ](#14-常见问题-faq)
 14. [文件布局速查](#14-文件布局速查)
 
 ---
@@ -640,7 +641,41 @@ Abaqus JOB umat_e2e COMPLETED           ← 作业成功
 THE ANALYSIS HAS COMPLETED SUCCESSFULLY ← 收敛
 ```
 
-## 13. 常见问题 FAQ
+## 13. Abaqus MCP 在超算上的可行性结论
+
+> 结论：**Abaqus MCP（`Flyme-wang/CAE-Agent-Hub/MCP/Abaqus`）不适合在超算上运行**，
+> 它依赖 CAE GUI 常驻 + 本地 Python 依赖，与无头、受限的集群环境冲突。
+
+### 13.1 MCP 架构要求
+
+```
+MCP client
+  <stdio MCP>
+mcp_server.py            ← 跑在 Abaqus 之外，依赖 mcp>=1.0（pydantic/httpx/anyio）
+  <local TCP, 127.0.0.1:48152>
+Abaqus/CAE GUI bridge    ← abaqus_mcp_plugin.py 跑在 CAE GUI 线程
+  <AFX timeout dispatcher + sendCommand>
+Abaqus kernel
+```
+
+### 13.2 与超算环境的冲突
+
+| MCP 要求 | 天河超算现状 | 结果 |
+|---|---|---|
+| CAE GUI 常驻（bridge 在 GUI 线程） | 无 Xvfb/Xvnc，**无 sudo 无法安装** | ❌ 无法无头启动 |
+| 插件无条件 `getAFXApp().getAFXMainWindow()` | `cae noGUI` 模式无 AFXApp 主窗口 | ❌ noGUI 不可用 |
+| 依赖 `mcp>=1.0`（需 pip 安装） | 登录节点无 pip，**外网 PyPI 不可达** | ❌ 依赖装不上 |
+| 本地 wheel 中转 | 本机代理失效 + 无直连外网 | ❌ 中转不可行 |
+
+### 13.3 适用场景
+
+- **本地 Windows**：有本地 Abaqus 安装时，在 `MCP/Abaqus/` 目录执行
+  `py -m venv .venv` + `pip install -e .`，复制 `abaqus_plugins/mcp_control`
+  到 `%USERPROFILE%\abaqus_plugins\`，即可用 MCP 控制 Abaqus/CAE。
+- **超算**：使用本教程的 SLURM 提交流程 + `tianhe-aba` skill（提交/监控/UMAT/结果），
+  这是无头集群上实际可用的能力。
+
+## 14. 常见问题 FAQ
 
 | 症状 | 原因 | 解决 |
 |---|---|---|
