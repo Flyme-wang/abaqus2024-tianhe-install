@@ -1,9 +1,26 @@
-# Abaqus 2024 在天河超算上的安装与 SLURM 作业教程
+# Abaqus 2024 Linux 集群无头安装教程（天河超算 + wh-xueyuan）
 
 > 天河超算（Tianhe）登录节点 `121.46.19.4:6666`，用户 `apm_zcshen_5`，SLURM 调度器。
 > 本教程完整记录 Abaqus 2024（官方版）从介质解压、无头安装、缺失系统库补齐、
 > **Standard 求解器补装**、环境文件配置、到 SLURM 32 核提交运行的全过程。
 > 所有命令均可直接复制执行。
+>
+> **v2.0（2026-10-22）**：新增第二集群 **wh-xueyuan（rosefinch-login03，Ubuntu 20.04）**
+> 的完整适配实录（第 15 节）——无缺系统库、无 SLURM 登录节点直装、本地 Windows
+> FlexNet 许可证经 SSH 反向隧道（双端口）、CAA 子安装器死循环处置、ssh 远程长任务
+> 正确姿势；新增 `scripts/whxueyuan/` 适配脚本包。
+
+---
+
+## 版本历史
+
+| 版本 | 日期 | 内容 |
+|---|---|---|
+| v1.0 | 2026-08-17 | 天河超算安装与 SLURM 作业教程：介质解压、无头安装、缺库补齐、Standard 哈希补装、验证 |
+| v1.1 | 2026-08-18 | 新增 `skill/tianhe-aba`：天河作业提交/监控/UMAT/结果提取工作流 |
+| v1.2 | 2026-08-18 | 新增 Fortran 用户子程序（UMAT）配置指南与端到端测试（§12） |
+| v1.3 | 2026-08-19 | 新增 Abaqus MCP 在超算上的可行性结论（§13） |
+| **v2.0** | 2026-10-22 | **新增第二集群 wh-xueyuan（rosefinch）适配实录（§15）与 `scripts/whxueyuan/` 脚本包**；提炼跨集群迁移最小清单（§15.7） |
 
 ---
 
@@ -23,7 +40,8 @@
 12. [Fortran 用户子程序（UMAT）配置（重点）](#12-fortran-用户子程序umat配置重点)
 13. [Abaqus MCP 在超算上的可行性结论](#13-abaqus-mcp-在超算上的可行性结论)
 14. [常见问题 FAQ](#14-常见问题-faq)
-14. [文件布局速查](#14-文件布局速查)
+15. [wh-xueyuan 第二集群适配（v2.0 新增）](#15-wh-xueyuan-第二集群适配)
+16. [文件布局速查](#16-文件布局速查)
 
 ---
 
@@ -688,10 +706,157 @@ Abaqus kernel
 | `glXCreateContext failed` / `maximum number of visuals exceeded` | X11 GLX 问题 | `abaqus2024 cae -mesa` |
 | GLIBC_2.28 not found | CentOS 7 上跑 2024 | 用 com_u22（Ubuntu 22.04） |
 | `lmgrd is not running` | 分区到许可证服务器 FLEXnet 不通 | 用 com_u22 分区 |
+| CAA API 子安装器无限循环 `Default [/usr/SIMULIA/...]` | 无权限默认目录 + 驱动脚本自动回车 | 主装产物已齐（EstProducts+commands+CATEnv）时 kill CAA 与主安装器整链（§15.5 坑 1） |
+| ssh 后台远程任务后本地 ssh 挂死/超时 | `cmd && nohup … &` 整链进后台持有 ssh stdout | `(setsid nohup CMD > log 2>&1 < /dev/null &)`（§15.5 坑 2） |
+| `License for standard is not available`（隧道场景） | 反向隧道只映射 lmgrd 端口，vendor 端口不通 | 双端口 `-R 27800:... -R 65260:...`（§15.4） |
+| 包装器报 abaqus 可执行不存在（2024 新布局） | launcher 在 `commands/` 下而非安装根 | exec `SIMULIA/var/dassaultsystemes/simulia/commands/abaqus`（§15.2） |
 
 ---
 
-## 14. 文件布局速查
+## 15. wh-xueyuan 第二集群适配
+
+> 2026-10-22 实录：将本教程天河流程适配到第二个集群 **wh-xueyuan**
+> （登录节点 rosefinch-login03，Ubuntu 20.04），从介质上传到 tiny_std 验证通过
+> 当日完成。本节只讲**与天河不同之处**；通用流程（卷 2 占位、TUI 驱动安装、
+> Standard 哈希补装、tiny_std 验证）直接复用第 3/4/9/10 节，
+> 适配脚本见 `scripts/whxueyuan/`。
+
+### 15.1 节点概况
+
+| 项目 | 值 |
+|---|---|
+| SSH | `wh-xueyuan`（172.16.255.103:22，用户 `sunxinyao`） |
+| 登录节点 | rosefinch-login03，Ubuntu 20.04，64 核 |
+| home | `/data3/sunxinyao`（大容量、读写快） |
+| 调度器 | **登录节点无 SLURM** → 安装与求解直接在登录节点跑 |
+| `/tmp` | 无 noexec（TMPDIR 重定向保留亦无害） |
+| 外网 | 登录节点可直连 |
+| scp | **可靠**（md5 校验通过；11GB 介质直传约 23–35 MB/s） |
+
+> 与天河相反：天河 scp 会静默损坏（多 96 字节）须用 cat 管道中转；
+> 到新集群先传小文件 md5 抽验，可靠则大文件直接 scp。
+
+### 15.2 与天河流程的差异总表
+
+| 维度 | 天河 com_u22 | wh-xueyuan（rosefinch） |
+|---|---|---|
+| OS | Ubuntu 22.04，缺 8 个旧系统库（§5） | **Ubuntu 20.04 无缺库**，`abaqus2024_libs` 留空 |
+| 安装执行 | SLURM 提交到计算节点（`install_on_mars.sh`） | 登录节点直接跑（无 SLURM） |
+| `/tmp` | noexec → 必须 TMPDIR 重定向 | 无 noexec（重定向保留无害） |
+| launcher 位置 | `EstProducts/2024/abaqus` | **`SIMULIA/var/dassaultsystemes/simulia/commands/abaqus`**（→SMALauncher 符号链接），包装器 exec 路径要改 |
+| 许可证 | 集群 FLEXnet `27000@12.8.3.194` | 本地 Windows FlexNet 经 **SSH 反向隧道** `27800@127.0.0.1`（§15.4） |
+| Standard 求解器 | 缺 6 文件，按 media.db 哈希补装（§9） | **完全相同**（同批次介质，6 个哈希与 §9.6 一字不差） |
+| 作业提交 | `sbatch run_abaqus2024.sh ...` | 登录节点 `abaqus2024 ... interactive` 直跑 |
+
+### 15.3 适配流程与脚本包 `scripts/whxueyuan/`
+
+```
+/data3/sunxinyao/
+├── abaqus2024install/     # 安装根（介质 + 安装 + 脚本同处，完整布局见 §16）
+├── bin/abaqus2024         # 启动包装器（exec commands/abaqus）
+└── abaqus_v6.env          # abaquslm_license_file = "27800@127.0.0.1"
+```
+
+适配五步（`adapt.sh` 一键完成第 1/2/4 步）：
+
+1. 上传天河脚本包 → `sed -i 's/\r$//'` 清 CRLF（Windows 上传必做）
+2. `sed` 路径替换：`$HOME/HDD_POOL/...` → `/data3/sunxinyao/abaqus2024install/...`
+3. `install_driver.py` 顶部常量改本机路径（MEDIA / INSTALL_DIR / LICENSE 等）
+4. 生成 `~/bin/abaqus2024` 包装器 + `~/abaqus_v6.env`
+5. 卷 2 占位 → 跑驱动安装 → Standard 补装 → tiny_std 验证
+
+安装启动（远程长任务正确姿势，见 §15.5 坑 2）：
+
+```bash
+cd /data3/sunxinyao/abaqus2024install
+(setsid nohup python3 install_driver.py > install_run.log 2>&1 < /dev/null &)
+# 进度: tail -f install_driver.log；决策核对: install_driver_debug.log
+# 应看到 [idir-clear] [idir-path] [comp-1..6] [license-type-skip] 等应答记录
+```
+
+### 15.4 许可证：本地 FlexNet 经 SSH 反向隧道（重点）
+
+节点本身没有 Abaqus 许可证服务器，复用**本地 Windows FlexNet**：
+lmgrd 监听 27800，ABAQUSLM vendor daemon 监听 65260。
+
+```bash
+# 从许可证服务器所在机器建立反向隧道——两个端口都必须映射！
+ssh -R 27800:127.0.0.1:27800 -R 65260:127.0.0.1:65260 wh-xueyuan
+```
+
+- 只映射 27800（lmgrd）不映射 65260（vendor daemon）→ 签出失败
+- 节点侧 `~/abaqus_v6.env` 写 `abaquslm_license_file = "27800@127.0.0.1"`
+- 隧道断开 → `License for standard is not available`，重连即恢复；
+  日常建议就在带 `-R` 的会话里跑 Abaqus
+- 一次性验证（自带隧道执行远程命令）：
+
+```bash
+ssh -R 27800:127.0.0.1:27800 -R 65260:127.0.0.1:65260 wh-xueyuan \
+  'cd /data3/sunxinyao/abaqus2024install/tiny_std_test && \
+   ~/bin/abaqus2024 input=tiny_std.inp job=tiny_std cpus=4 interactive'
+```
+
+### 15.5 本次新增的坑与处置
+
+**坑 1：CAA API 子安装器死循环。**
+主安装（EstProducts ~12GB + commands 启动器 + CATEnv 注册）完成后，
+CAA API 子安装器卡在 `Default [/usr/SIMULIA/EstProducts/2024]`（无权限默认目录）
+warning → 驱动脚本自动回车 → 再 warning 的无限循环。
+
+处置：kill CAA 子安装器进程；随后主安装器陷入 `Cannot wait for process` +
+`Input error` 循环 → 一并 kill 整链。**判断依据**：所需产物已全部落盘
+（EstProducts 12GB + `commands/` 启动器 + CATEnv 注册），安装实际已完成，
+后续 Standard 补装与验证均不受影响。
+
+**坑 2：ssh 远程长任务把本地 ssh 挂死。**
+`cmd && nohup X > log 2>&1 & echo` 这种写法整条链进后台，子 shell 持有
+ssh stdout → 本地 ssh 挂死/超时（杀本地任务后远端进程因 setsid+nohup 仍在跑）。
+
+远程长任务一律用子 shell 包裹启动：
+
+```bash
+(setsid nohup CMD > log 2>&1 < /dev/null &)
+```
+
+**坑 3：launcher 位置与天河不同。**
+`EstProducts/2024/` 根下没有 `abaqus` 可执行文件；实际在
+`SIMULIA/var/dassaultsystemes/simulia/commands/{abaqus,abq2024}`。
+包装器 exec 路径按 §15.2 差异表修改。
+
+**坑 4：`ldd standard` 大量 not found 属正常。**
+与天河相同（§9.7）：ABQ 自有库在安装目录内，由 launcher 设置的
+`LD_LIBRARY_PATH` 加载。带 `code/bin:code/lib` 过滤内部库后复查，
+Ubuntu 20.04 无任何系统库缺失。
+
+### 15.6 验证结果（2026-10-22）
+
+```
+Abaqus License Manager checked out the following licenses:
+Abaqus/Standard checked out 5 tokens from Flexnet server 127.0.0.1.
+<9994 out of 9999 licenses remain available>.
+...
+Abaqus JOB tiny_std COMPLETED
+THE ANALYSIS HAS COMPLETED SUCCESSFULLY
+```
+
+无 SLURM：验证作业在登录节点直接 `interactive` 运行即可（tiny_std.inp 见 §10.1）。
+
+### 15.7 迁移到其他集群的最小清单
+
+把本教程适配到一个新 Linux 集群，只需五步：
+
+1. **查环境**：OS 版本（决定是否补系统库）、`/tmp` 是否 noexec、有无调度器、许可证源
+2. **传介质**：卷 1/3/4/5/6 + 卷 2 占位；scp 可靠性先小文件 md5 抽验
+3. **跑安装**：`install_driver.py` 改顶部路径常量 → TUI 自动应答安装（CAA 死循环见坑 1）
+4. **补 Standard**：`install_std_solver.sh` + `check_std_missing.sh` 核对
+5. **配 wrapper/env**：确认 launcher 实际位置 → 包装器 + `abaqus_v6.env` → tiny_std 验证
+
+> Standard 6 文件哈希（§9.6）在同批次 2024 介质上通用——wh-xueyuan 与天河
+> 两个集群实测完全一致，可放心复用。
+
+---
+
+## 16. 文件布局速查
 
 ```
 ~/HDD_POOL/
@@ -715,6 +880,25 @@ Abaqus kernel
 ~/HDD_POOL/fortran_test/       # UMAT 测试目录（umat_test.f, libstandardU.so）
 ```
 
+**wh-xueyuan（rosefinch）布局（v2.0）：**
+
+```
+/data3/sunxinyao/
+├── abaqus2024install/                     # 安装根（介质 + 安装 + 脚本同处）
+│   ├── 1/ 2/ 3/ 4/ 5/ 6/                  # 介质卷（2 为占位：2.txt + media.db 复制自卷 1）
+│   ├── DS.SIMULIA.SUITE.2024...tar.gz     # 原始介质包（运行稳定后可删）
+│   ├── SIMULIA/EstProducts/2024/          # 主安装 ~12GB（explicit 随装，Standard 需补装）
+│   ├── SIMULIA/var/dassaultsystemes/simulia/commands/   # abaqus 启动器（→SMALauncher）
+│   ├── abaqus2024_libs/                   # 缺失系统库（Ubuntu 20.04 无缺库，留空）
+│   ├── tmpinstall/                        # 安装临时目录
+│   ├── install_driver.py / install_driver.log / install_driver_debug.log
+│   ├── adapt.sh / install_std_solver.sh / check_std_missing.sh
+│   ├── tiny_std_test/                     # 验证作业目录
+│   └── INSTALL_NOTES.md                   # 本节点安装实录
+├── bin/abaqus2024                         # 启动包装器（exec commands/abaqus）
+└── abaqus_v6.env                          # abaquslm_license_file = "27800@127.0.0.1"
+```
+
 ---
 
 ## 附：关键脚本索引
@@ -733,3 +917,10 @@ Abaqus kernel
 | `scripts/fortran/umat_test.f` | 线性弹性 UMAT 示例 |
 | `scripts/fortran/umat_e2e.inp` | 调用 UMAT 的测试模型 |
 | `scripts/fortran/umat_slurm_test.sh` | UMAT 端到端测试（SLURM） |
+| `scripts/whxueyuan/adapt.sh` | wh-xueyuan 一键适配：CRLF 清理 + 路径 sed + 生成 wrapper/env（§15.3） |
+| `scripts/whxueyuan/install_driver.py` | wh-xueyuan 版 TUI 自动应答驱动（路径常量已适配） |
+| `scripts/whxueyuan/install_std_solver.sh` | Standard 补装（路径适配版，哈希同 §9.6） |
+| `scripts/whxueyuan/check_std_missing.sh` | media.db 缺失清单检查（路径适配版） |
+| `scripts/whxueyuan/abaqus2024` | wh-xueyuan 启动包装器（exec commands/abaqus） |
+| `scripts/whxueyuan/abaqus_v6.env` | wh-xueyuan 环境文件（27800@127.0.0.1 反向隧道） |
+| `scripts/whxueyuan/INSTALL_NOTES.md` | wh-xueyuan 安装实录（2026-10-22） |

@@ -1,0 +1,9 @@
+#!/bin/bash
+# ============================================================
+#  Abaqus 2024 启动包装器（wh-xueyuan / rosefinch-login03）
+#  - 注入缺失系统库目录 abaqus2024_libs
+#  - LIBGL_ALWAYS_INDIRECT=1 解决 X11 转发下 GLX visuals 问题
+# ============================================================
+export LD_LIBRARY_PATH=/data3/sunxinyao/abaqus2024install/abaqus2024_libs:$LD_LIBRARY_PATH
+export LIBGL_ALWAYS_INDIRECT=1
+exec /data3/sunxinyao/abaqus2024install/SIMULIA/var/dassaultsystemes/simulia/commands/abaqus "$@"
