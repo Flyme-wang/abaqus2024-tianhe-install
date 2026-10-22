@@ -45,7 +45,7 @@
 12. [Fortran 用户子程序（UMAT）配置（重点）](#12-fortran-用户子程序umat配置重点)
 13. [Abaqus MCP 在超算上的可行性结论](#13-abaqus-mcp-在超算上的可行性结论)
 14. [常见问题 FAQ](#14-常见问题-faq)
-15. [wh-xueyuan 第二集群适配（v2.0 新增）](#15-wh-xueyuan-第二集群适配)
+15. [wh-xueyuan 第二集群适配（v2.0 新增，v2.1 补 UMAT）](#15-wh-xueyuan-第二集群适配)
 16. [文件布局速查](#16-文件布局速查)
 
 ---
