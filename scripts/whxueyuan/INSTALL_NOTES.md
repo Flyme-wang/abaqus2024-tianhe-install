@@ -26,9 +26,39 @@
 
 tiny_std 单元素作业（tiny_std_test/）：Abaqus/Standard 2024，license checked out 5 tokens from 127.0.0.1（9994/9999 remain），`THE ANALYSIS HAS COMPLETED SUCCESSFULLY` ✓
 
+## UMAT（Fortran 用户子程序）补齐（2026-10-23）
+
+主装 + Standard 补装后 **UMAT 仍不可用**（`abaqus make library=*.f` 报 ifort 找不到 + ABA_PARAM.INC 打不开；media.db 亦无 SMAUsubs 条目）。
+`fix_umat.sh` 从 abaqus2021_install 复制三组件补齐（2021 与 2024 接口兼容，天河 README §12 同法）：
+
+| 组件 | 来源（2021）→ 目标（2024） |
+|---|---|
+| SMAUsubs 全树（含 PublicInterfaces 26 文件） | `abaqus2021_install/SIMULIA/EstProducts/2021/SMAUsubs` → `$ABQ/SMAUsubs` |
+| 静态链接库 | `.../2021/code/lib/libstandardU_static.a`（951402 B）→ `$ABQ/linux_a64/code/lib/` |
+| site 参数头文件（.inc/.h/.blk） | `.../2021/SMA/site/` → `$ABQ/linux_a64/SMA/site/`（aba_param.inc 等） |
+
+编译器：**ifort classic 2021.13.1 仅存在于 oneAPI `compiler/2024.2/bin`**（latest=2025.2 已无 ifort classic，须定向 2024.2）。
+包装器 `~/bin/abaqus2024` 采用 **PATH 注入**。
+
+**两个关键坑**：
+
+1. 勿在包装器内 `source .../compiler/2024.2/env/vars.sh`：该脚本 L215-224 含
+   `while [ $# -gt 0 ]; case "$1" in ... shift` 位置参数解析，被 source 时会吃掉包装器的 `$@`
+   → SMALauncher 收到零参数，报 `Command line option "job" must have a value`。
+   只 `export PATH=/data3/sunxinyao/intel/oneapi/compiler/2024.2/bin:$PATH` 即可
+   （make 编译与 user=*.f 运行时编译均验证通过，无需 LD_LIBRARY_PATH）。
+2. **2024 的 `user=` 必须传 Fortran 源码**（`user=umat_test.f`，运行时编译）；
+   传编译好的 `libstandardU.so` 会报 "could not be located: libstandardU.so.f, .for, ..."。
+
+验证（2026-10-23，登录节点直跑，无 SLURM）：
+
+- `~/bin/abaqus2024 make library=umat_test.f` → `Abaqus JOB umat_test.f COMPLETED`，libstandardU.so 390808 B
+- 单元素 e2e（`fortran_test/umat_e2e.inp`，`user=umat_test.f`）→ `Abaqus JOB umat_e2e COMPLETED`，
+  `THE ANALYSIS HAS COMPLETED SUCCESSFULLY`，`0 ERROR MESSAGES` ✓
+
 ## 待办/备注
 
-- **UMAT（Fortran 用户子程序）**: `SMAUsubs/PublicInterfaces` 未随装；需要时从 `abaqus2021_install/SIMULIA/EstProducts/2021/SMAUsubs` 复制（参照天河 README §12，另需 site inc 与 libstandardU_static.a；节点 home 有 intel_parallel2025 可配 ifort）
+- **UMAT**: 已补齐并验证（见上节）；日常用法 `~/bin/abaqus2024 make library=xxx.f`、作业 `user=xxx.f`
 - **GUI/CAE**: `abaqus2024 cae -mesa`（若 GLX 报错）；包装器已设 LIBGL_ALWAYS_INDIRECT=1
 - **磁盘**: 介质卷(~12GB)+tar.gz(11GB) 确认运行稳定后可删；保留介质便于后续按哈希补装
 - **日常使用**: 建议在 ~/.bashrc 加 `alias abaqus2024="/data3/sunxinyao/bin/abaqus2024"`（未替你改 .bashrc）

@@ -1,9 +1,14 @@
 #!/bin/bash
 # ============================================================
-#  Abaqus 2024 启动包装器（wh-xueyuan / rosefinch-login03）
-#  - 注入缺失系统库目录 abaqus2024_libs
+#  Abaqus 2024 启动包装器（wh-xueyuan / rosefinch-login03，含 UMAT 支持）
 #  - LIBGL_ALWAYS_INDIRECT=1 解决 X11 转发下 GLX visuals 问题
+#  - PATH 注入 ifort classic 2021.13（Intel oneAPI 2024.2）
+#    ⚠️ 勿 source .../compiler/2024.2/env/vars.sh：该脚本含 shift 参数
+#       解析（约 L215-224），在包装器内 source 会吃掉 $@，SMALauncher
+#       收到零参数报 "Command line option job must have a value"
+#    ⚠️ oneapi latest=2025.2 已无 ifort classic，须定向 2024.2/bin
+#  - make 编译与 user=*.f 运行时编译均只需 PATH（LD_LIBRARY_PATH 勿注入）
 # ============================================================
-export LD_LIBRARY_PATH=/data3/sunxinyao/abaqus2024install/abaqus2024_libs:$LD_LIBRARY_PATH
 export LIBGL_ALWAYS_INDIRECT=1
+export PATH=/data3/sunxinyao/intel/oneapi/compiler/2024.2/bin:$PATH
 exec /data3/sunxinyao/abaqus2024install/SIMULIA/var/dassaultsystemes/simulia/commands/abaqus "$@"

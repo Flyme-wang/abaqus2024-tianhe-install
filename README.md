@@ -9,6 +9,10 @@
 > 的完整适配实录（第 15 节）——无缺系统库、无 SLURM 登录节点直装、本地 Windows
 > FlexNet 许可证经 SSH 反向隧道（双端口）、CAA 子安装器死循环处置、ssh 远程长任务
 > 正确姿势；新增 `scripts/whxueyuan/` 适配脚本包。
+>
+> **v2.1（2026-10-23）**：wh-xueyuan **UMAT（Fortran 用户子程序）补齐与端到端验证**
+> （§15.8）——从 2021 安装复制三组件 + ifort classic 定向 oneAPI 2024.2；
+> 两个新坑：Intel `vars.sh` 被 source 时吃掉包装器 `$@`、2024 `user=` 须传源码。
 
 ---
 
@@ -21,6 +25,7 @@
 | v1.2 | 2026-08-18 | 新增 Fortran 用户子程序（UMAT）配置指南与端到端测试（§12） |
 | v1.3 | 2026-08-19 | 新增 Abaqus MCP 在超算上的可行性结论（§13） |
 | **v2.0** | 2026-10-22 | **新增第二集群 wh-xueyuan（rosefinch）适配实录（§15）与 `scripts/whxueyuan/` 脚本包**；提炼跨集群迁移最小清单（§15.7） |
+| **v2.1** | 2026-10-23 | **wh-xueyuan UMAT（Fortran 用户子程序）补齐与端到端验证（§15.8）**；新增 `fix_umat.sh`；两个新坑：Intel vars.sh source 吃掉 `$@`、2024 `user=` 须传源码 |
 
 ---
 
@@ -710,6 +715,8 @@ Abaqus kernel
 | ssh 后台远程任务后本地 ssh 挂死/超时 | `cmd && nohup … &` 整链进后台持有 ssh stdout | `(setsid nohup CMD > log 2>&1 < /dev/null &)`（§15.5 坑 2） |
 | `License for standard is not available`（隧道场景） | 反向隧道只映射 lmgrd 端口，vendor 端口不通 | 双端口 `-R 27800:... -R 65260:...`（§15.4） |
 | 包装器报 abaqus 可执行不存在（2024 新布局） | launcher 在 `commands/` 下而非安装根 | exec `SIMULIA/var/dassaultsystemes/simulia/commands/abaqus`（§15.2） |
+| `Command line option "job" must have a value`（包装器内 source 过 Intel vars.sh） | vars.sh 的 `shift` 参数解析吃掉包装器 `$@`，SMALauncher 收到零参数 | 包装器只 `export PATH=.../compiler/2024.2/bin:$PATH`，勿 source（§15.8 坑 1） |
+| `user=libstandardU.so` 报 could not be located: …f/.for | 2024 的 `user=` 要源码运行时编译 | `user=umat_test.f` 传 Fortran 源文件（§15.8 坑 2） |
 
 ---
 
@@ -854,6 +861,49 @@ THE ANALYSIS HAS COMPLETED SUCCESSFULLY
 > Standard 6 文件哈希（§9.6）在同批次 2024 介质上通用——wh-xueyuan 与天河
 > 两个集群实测完全一致，可放心复用。
 
+### 15.8 UMAT（Fortran 用户子程序）补齐与验证（v2.1）
+
+> 2026-10-23 实录：主装 + Standard 补装完成后 `abaqus make library=*.f`
+> 仍失败（ifort 找不到、`ABA_PARAM.INC` 打不开）——2024 介质不含
+> SMAUsubs（media.db 亦无条目）。从节点的 Abaqus 2021 安装复制三组件补齐，
+> 端到端验证通过。`scripts/whxueyuan/fix_umat.sh` 一键完成。
+
+**三组件**（来源 `abaqus2021_install/SIMULIA/EstProducts/2021`，2021→2024 接口兼容，同天河 §12 思路）：
+
+| 组件 | 目标（`$ABQ` = `.../EstProducts/2024`） |
+|---|---|
+| `SMAUsubs/` 全树（含 PublicInterfaces 26 个接口文件） | `$ABQ/SMAUsubs` |
+| `code/lib/libstandardU_static.a`（951402 B） | `$ABQ/linux_a64/code/lib/` |
+| `SMA/site/` 参数头文件（aba_param.inc、vaba_param_*.inc、*.h、*.blk） | `$ABQ/linux_a64/SMA/site/` |
+
+**编译器定位**：ifort classic 2021.13.1 **仅存在于 Intel oneAPI `compiler/2024.2/bin`**
+（`latest`→2025.2 已无 ifort classic；勿按 `setvars.sh` 默认路径找）。
+包装器 `~/bin/abaqus2024` 相应改为 **PATH 注入 + UMAT 三组件就位**（v2.1 最终版）。
+
+**两个新坑（v2.1）**：
+
+1. **勿在包装器内 `source .../compiler/2024.2/env/vars.sh`**。
+   该脚本 L215-224 含 `while [ $# -gt 0 ]; case "$1" in … shift` 位置参数解析，
+   被 source 时会吃掉包装器的 `$@` → `exec commands/abaqus "$@"` 收到零参数，
+   报 `Abaqus Error: Command line option "job" must have a value`。
+   只 `export PATH=.../compiler/2024.2/bin:$PATH` 即可——make 编译与
+   `user=*.f` 运行时编译均验证通过，无需 LD_LIBRARY_PATH。
+2. **2024 的 `user=` 必须传 Fortran 源码**（`user=umat_test.f`，运行时编译）。
+   传编译好的 `libstandardU.so` 会报
+   `could not be located: libstandardU.so.f, libstandardU.so.for, ...`。
+
+**验证**（登录节点直跑，无 SLURM，无天河式 libmpiCC 问题）：
+
+```text
+~/bin/abaqus2024 make library=umat_test.f
+  → Abaqus JOB umat_test.f COMPLETED（libstandardU.so 390808 B）
+~/bin/abaqus2024 input=umat_e2e.inp job=umat_e2e user=umat_test.f cpus=8 interactive
+  → Abaqus JOB umat_e2e COMPLETED / THE ANALYSIS HAS COMPLETED SUCCESSFULLY / 0 ERROR MESSAGES
+```
+
+测试文件复用 `scripts/fortran/`（umat_test.f 线弹性 UMAT + umat_e2e.inp 单元素作业）；
+从 Windows 仓库检出上传须先 `sed -i "s/\r$//"` 清 CRLF（.f 对此敏感）。
+
 ---
 
 ## 16. 文件布局速查
@@ -888,12 +938,14 @@ THE ANALYSIS HAS COMPLETED SUCCESSFULLY
 │   ├── 1/ 2/ 3/ 4/ 5/ 6/                  # 介质卷（2 为占位：2.txt + media.db 复制自卷 1）
 │   ├── DS.SIMULIA.SUITE.2024...tar.gz     # 原始介质包（运行稳定后可删）
 │   ├── SIMULIA/EstProducts/2024/          # 主安装 ~12GB（explicit 随装，Standard 需补装）
+│   │   └── SMAUsubs/ + code/lib/libstandardU_static.a + SMA/site/*.inc   # UMAT 三组件（v2.1 从 2021 复制，§15.8）
 │   ├── SIMULIA/var/dassaultsystemes/simulia/commands/   # abaqus 启动器（→SMALauncher）
 │   ├── abaqus2024_libs/                   # 缺失系统库（Ubuntu 20.04 无缺库，留空）
 │   ├── tmpinstall/                        # 安装临时目录
 │   ├── install_driver.py / install_driver.log / install_driver_debug.log
-│   ├── adapt.sh / install_std_solver.sh / check_std_missing.sh
+│   ├── adapt.sh / install_std_solver.sh / check_std_missing.sh / fix_umat.sh
 │   ├── tiny_std_test/                     # 验证作业目录
+│   ├── fortran_test/                      # UMAT 测试目录（umat_test.f, umat_e2e, libstandardU.so）
 │   └── INSTALL_NOTES.md                   # 本节点安装实录
 ├── bin/abaqus2024                         # 启动包装器（exec commands/abaqus）
 └── abaqus_v6.env                          # abaquslm_license_file = "27800@127.0.0.1"
@@ -921,6 +973,7 @@ THE ANALYSIS HAS COMPLETED SUCCESSFULLY
 | `scripts/whxueyuan/install_driver.py` | wh-xueyuan 版 TUI 自动应答驱动（路径常量已适配） |
 | `scripts/whxueyuan/install_std_solver.sh` | Standard 补装（路径适配版，哈希同 §9.6） |
 | `scripts/whxueyuan/check_std_missing.sh` | media.db 缺失清单检查（路径适配版） |
-| `scripts/whxueyuan/abaqus2024` | wh-xueyuan 启动包装器（exec commands/abaqus） |
+| `scripts/whxueyuan/abaqus2024` | wh-xueyuan 启动包装器（exec commands/abaqus + ifort PATH 注入，v2.1 含 UMAT） |
 | `scripts/whxueyuan/abaqus_v6.env` | wh-xueyuan 环境文件（27800@127.0.0.1 反向隧道） |
-| `scripts/whxueyuan/INSTALL_NOTES.md` | wh-xueyuan 安装实录（2026-10-22） |
+| `scripts/whxueyuan/fix_umat.sh` | wh-xueyuan UMAT 一键补齐：复制 2021 三组件 + 装最终包装器（§15.8） |
+| `scripts/whxueyuan/INSTALL_NOTES.md` | wh-xueyuan 安装实录（2026-10-22 安装 + 2026-10-23 UMAT 补齐） |
